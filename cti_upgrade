@@ -1,0 +1,444 @@
+#!/bin/bash 
+
+DIRNAME=install
+INSTALLNAME=install
+PACKAGETYPE=install
+INSTALLNAMELIST=.cti_installed.list
+INSTALLNAMELISTPATCH=.cti_installed_patch.list
+STMINSTALLNAMELIST=.cti_installed_stm.list
+INSTALLLOG=.cti_install_log.log
+#docker路径
+DODEB_PATH=/home/neousys/install/docker
+DOCK_PATH=/home/neousys/install
+CURPWD=$PWD
+USER_HOME=$HOME
+arch_system=$(dpkg --print-architecture)
+
+function checksuperuser(){
+    if [ "root" != $1 ]; then
+        echo "请用超级用户权限运行.exit."
+        exit 1
+    fi
+}
+
+function parsename(){
+    filename=$(echo $1 | cut -f 1 -d "_")
+    filename=${filename%%.*}
+    #filename=${filename,,}
+}
+
+function checkfile(){
+    if [ ! -f $1 ]; then
+        echo "未发现$1."
+        return 2
+    fi
+    filename=$(dpkg --info $1 | grep "Package" | sed s/[[:space:]]//g | cut -f 2 -d ":")
+    fileversion=$(dpkg --info $1 | grep "Version"  | sed s/[[:space:]]//g | cut -f 2 -d ":")
+    filearch=$(dpkg --info $1 | grep "Architecture"  | sed s/[[:space:]]//g | cut -f 2 -d ":")
+    echo "需安装$1信息:name:$filename version:$fileversion arch:$filearch."
+    if [ "" == "$filename" ]; then
+        echo "文件包名异常."
+        return 3
+    fi
+    info=$(dpkg -l | grep $filename | tr -s ' ')
+    if [ "" == "$info" ]; then
+        unset check_softversion
+        unset check_filearch
+        echo "未安装过$1"
+    else
+        check_softversion=$(echo $info | cut -d ' ' -f 3)
+        check_filearch=$(echo $info | cut -d ' ' -f 4)
+        echo "已安装$filename信息:(version:$check_softversion arch:$check_filearch)."
+    fi
+    
+    echo "check version:$fileversion == $check_softversion?"
+    if [ "$fileversion" = "$check_softversion" ]; then
+        return 1
+    fi
+    return 0
+}
+
+function apt_install(){
+    apt install $@ -y >> $USER_HOME/$INSTALLLOG
+}
+
+function dpkg_install(){
+    dpkg -i $@ >> $USER_HOME/$INSTALLLOG
+    #安装依赖
+    for file in $@; do
+        filedepends=$(dpkg --info $file | grep "Depends" | sed s/[[:space:]]//g | cut -f 2 -d ":")
+        filedepends=(${filedepends//,/ })
+        if [ 0 -lt ${#filedepends[*]} ]; then
+            echo "依赖 ${filedepends[*]}."
+            apt_install ${filedepends[*]}
+        fi
+    done
+}
+
+function apt_uninstall(){
+    apt purge $@ -y
+}
+
+function dpkg_uninstall(){
+    dpkg --purge $@ 
+}
+
+function deleteFile(){
+    files=$@
+    for file in $files; do
+        if [ -f $file ]; then 
+            echo "删除$file"
+            rm -r $file
+        fi
+    done
+}
+
+function getDATA(){
+    cd $USER_HOME
+    if [  -d "$DIRNAME" ]; then
+        if [ -f "$DIRNAME.tar" ]; then
+            rm -rf $DIRNAME.tar
+        fi
+        tar cvf $DIRNAME.tar $DIRNAME > /dev/null
+        rm -rf $USER_HOME/$DIRNAME
+    fi
+
+    git clone --depth=1 https://gitee.com/ctinav/$DIRNAME.git
+    sync
+    if [ ! -d "$DIRNAME" ]; then
+        if [ -f "$DIRNAME.tar" ]; then
+            tar xvf $DIRNAME.tar > /dev/null
+        fi
+        cd $CURPWD
+        echo "下载$DIRNAME失败."
+        exit -1
+    fi
+    cd $CURPWD
+}
+
+function getDEB(){
+    cd $USER_HOME 
+    #--bak
+    if [ -d "$INSTALLNAME" ]; then
+        if [ -f "$INSTALLNAME.tar" ]; then
+            rm -r $INSTALLNAME.tar
+        fi
+        tar cvf $INSTALLNAME.tar $INSTALLNAME > /dev/null
+        rm -r $USER_HOME/$INSTALLNAME
+    fi
+    if [ -d "$DIRNAME" ]; then
+        rm -r $USER_HOME/$DIRNAME
+    fi
+#:<<eof
+    echo "获取远程文件,please wait... "
+    git clone --depth=1 https://gitee.com/ctinav/$DIRNAME.git
+#eof
+    sync
+    if [ ! -d "$DIRNAME" ]; then
+        if [ -f "$INSTALLNAME.tar" ]; then
+            tar xvf $INSTALLNAME.tar > /dev/null
+        fi
+        echo "下载$DIRNAME失败."
+        cd $CURPWD
+        exit -1
+    fi
+    mv $USER_HOME/$DIRNAME $USER_HOME/$INSTALLNAME
+    cd $CURPWD
+}
+
+function initSYSTEM(){
+    if [ -d "$1" ]; then
+        echo "初始化参数配置."
+        init_files=$(ls $1 | grep ".deb")
+        for init_file in $init_files; do
+            echo "初始化配置文件$init_file."
+            dpkg_install $1/$init_file 
+        done
+    fi
+}
+
+function updateSYSTEM(){
+    PACKAGEDIR=$1
+    #检测安装
+    install_files=$(ls $PACKAGEDIR | grep ".deb")
+    if [ ! -d $PACKAGEDIR ] || [ "" == "$install_files" ]; then
+        echo "$PACKAGEDIR目录未找到任何deb文件.安装失败!"
+        return -1
+    fi
+    
+    if [ ! -e $PACKAGEDIR/init ]; then
+        PACKAGETYPE=install_patch
+        INSTALLNAME=install_patch
+    fi
+
+    #first uninstall unuse node
+    if [ $PACKAGETYPE =  "install_patch" ]; then
+        #已安装的软件
+        if [  -f "$USER_HOME/$INSTALLNAMELISTPATCH" ]; then
+            installed_files=$(cat $USER_HOME/$INSTALLNAMELISTPAT1CH)
+        else
+            # initSYSTEM $PACKAGEDIR/init
+            touch $USER_HOME/$INSTALLNAMELISTPATCH
+        fi
+
+        echo "seach unusefull software and umount,please waiting..."
+        for installed_file in $installed_files; do
+            parsename $installed_file
+            unusefilename=$filename
+            check=$(echo $install_files | grep "$unusefilename")
+            if [ "" == "$check" ]; then
+                unupgrade_array[${#unupgrade_array[*]}]=$unusefilename
+            fi
+        done
+
+        cat /dev/null > $USER_HOME/$INSTALLNAMELISTPATCH
+    else
+        #已安装的软件
+        if [  -f "$USER_HOME/$INSTALLNAMELIST" ]; then
+            installed_files=$(cat $USER_HOME/$INSTALLNAMELIST)
+        else
+            initSYSTEM $PACKAGEDIR/init
+            touch $USER_HOME/$INSTALLNAMELIST
+        fi
+
+        echo "seach unusefull software and umount,please waiting..."
+        for installed_file in $installed_files; do
+            parsename $installed_file
+            unusefilename=$filename
+            check=$(echo $install_files | grep "$unusefilename")
+            if [ "" == "$check" ]; then
+                unusefile_array[${#unusefile_array[*]}]=$unusefilename
+            fi
+        done
+        if [ 0 -lt ${#unusefile_array[*]} ]; then
+            echo "卸载多余软件 ${unusefile_array[*]}."
+            dpkg_uninstall ${unusefile_array[*]}
+        fi
+        cat /dev/null > $USER_HOME/$INSTALLNAMELIST
+    fi
+    
+    # cat /dev/null > $USER_HOME/$INSTALLNAMELIST
+    echo "开始安装$PACKAGEDIR"
+    #second start  
+    for install_file in $install_files; do
+        checkfile $PACKAGEDIR/$install_file
+        ret=$?
+        if [ 0 -eq $ret ]; then
+            installed_array[${#installed_array[*]}]=$PACKAGEDIR/$install_file
+	    echo "安装列表------$install_file------"
+        elif [ 1 -eq $ret ]; then
+            echo "$install_file is the newest version."
+        else 
+            echo "$install_file安装异常."
+            continue
+        fi
+        if [ $PACKAGETYPE =  "install_patch" ]; then
+            echo $install_file >> $USER_HOME/$INSTALLNAMELISTPATCH
+        else
+            echo $install_file >> $USER_HOME/$INSTALLNAMELIST
+        fi
+    done
+    if [ 0 -lt ${#installed_array[*]} ]; then 
+        echo "安装 ${installed_array[*]}."
+        dpkg_install ${installed_array[*]}
+    fi
+    apt-get install -f -y
+    return 0
+}
+
+function printUSE(){
+    echo "阳光无人车系统升级，参数使用方法说明:"
+    echo "  ($0 -s|-S|-i|-I git包名) : 下载安装包，并更新"
+    echo "  ($0 -l|-L              ) : 安装$USER_HOME/$INSTALLNAME"
+    echo "  ($0 -map               ) : 安装地图数据"
+    echo "  ($0 -vmap              ) : 安装高精地图数据"
+}
+
+function dockerUPGRADE(){
+    echo "开始docker安装."
+    if [[ -e $DODEB_PATH ]]; then
+        echo "docker deb is eist."
+        # dockID=$(docker ps -a | grep cti_perception | awk '{print $1}') #短ID
+        echo "Docker Update start******************************" >> /home/neousys/log/logDocker.log
+        dockID=$(docker inspect -f '{{.ID}}' cti_perception) >> /home/neousys/log/logDocker.log   #长ID
+        echo "dockerID号为：$dockID" >> /home/neousys/log/logDocker.log
+        docker start $dockID
+        apt-get install expect -y >> /home/neousys/log/logDocker.log
+        echo "expect交互已安装." >> /home/neousys/log/logDocker.log
+        expect $DODEB_PATH/docker_mkdir.sh $dockID >> /home/neousys/log/logDocker.log
+        docker cp "$DODEB_PATH" $dockID:/workspace/install/ >> /home/neousys/log/logDocker.log
+        # docker cp "$DOCK_PATH/entrypoint.sh" $dockID:/workspace/
+        echo "deb包已迁移到docker容器内." >> /home/neousys/log/logDocker.log
+        expect $DODEB_PATH/docker_ex.sh $dockID >> /home/neousys/log/logDocker.log
+        echo "Docker 安装完成****************************" >> /home/neousys/log/logDocker.log
+        #docker dpkg -i $dockID/install/*deb
+    else
+        echo "不存在docker-deb包，安装失败." >> /home/neousys/log/logDocker.log
+    fi
+}
+
+#####################start#######################
+
+USER=$(whoami)
+echo "运行用户:$USER."
+TIME=$(date "+%Y-%m-%d %H:%M:%S")
+echo "升级时间:$TIME."
+
+#upgrade
+case "$1" in
+  -s|-S|-i|-I)
+    checksuperuser $USER
+    echo "运行用户:$USER." > $USER_HOME/$INSTALLLOG
+    echo "升级时间:$TIME." >> $USER_HOME/$INSTALLLOG
+    ###
+    DIRNAME=cti_install
+    if [ ! -z "$2" ]; then
+        DIRNAME=$2
+    fi
+    echo "下载$DIRNAME更新."
+    if [ $DIRNAME = "cti_install_patch" ]; then
+        INSTALLNAME=install_patch
+    fi
+    getDEB
+    updateSYSTEM $USER_HOME/$INSTALLNAME >> $USER_HOME/$INSTALLLOG
+    if [ 0 -eq $? ]; then
+        echo "安装成功."
+    else
+        echo "安装失败."
+    fi
+    #docker安装
+    echo "------开始docker安装--------"
+    dockerUPGRADE
+    echo "------docker安装完成--------"
+  ;;
+  -l|-L)
+    checksuperuser $USER
+    ##
+    DIRNAME=install
+    if [ ! -z "$2" ]; then
+        DIRNAME=$2
+    fi
+    echo "本地$DIRNAME更新."
+    updateSYSTEM $USER_HOME/$DIRNAME
+    if [ 0 -eq $? ]; then
+        echo "安装成功."
+    else
+        echo "安装失败."
+    fi
+  ;;
+  -ota|-OTA)
+    checksuperuser $USER
+    if [ ! -z "$2" ]; then
+        USER_HOME=$2
+    fi
+    SCRIPTFILE=$3
+    PARAMFILE=$4
+    if [ ! -f "$SCRIPTFILE" ] || [ ! -f $PARAMFILE ]; then 
+        echo "文件$SCRIPTFILE    & $PARAMFILE 异常."
+        echo $($SCRIPTFILE 0)
+        exit 1
+    fi
+    echo "文件$SCRIPTFILE & $PARAMFILE."
+    PACKAGEDIR=$(cat $PARAMFILE | grep "^package_dir:" | cut -d ":" -f 2)
+    PACKAGEVERSION=$(cat $PARAMFILE | grep "^package_version:" | cut -d ":" -f 2)
+    PACKAGENAME=$(cat $PARAMFILE | grep "^package_name:" | cut -d ":" -f 2)
+
+    echo "安装包目录:$PACKAGEDIR."
+    echo "包名:$PACKAGENAME."
+    echo "版本:$PACKAGEVERSION."
+
+    if [ ! -d $PACKAGEDIR ]; then 
+        echo "文件$PARAMFILE 安装包目录异常."
+        echo $($SCRIPTFILE 0)
+        exit 1
+    fi
+
+    echo "OTA升级."
+    updateSYSTEM $PACKAGEDIR
+    if [ 0 -eq $? ]; then
+        cd $USER_HOME 
+        #--bak
+        if [ -d "$INSTALLNAME" ]; then
+            if [ -f "$INSTALLNAME.tar" ]; then
+                rm -r $INSTALLNAME.tar
+            fi
+            tar cvf $INSTALLNAME.tar $INSTALLNAME > /dev/null
+            rm -r $USER_HOME/$INSTALLNAME
+        fi
+        cp -rf $PACKAGEDIR $USER_HOME/$INSTALLNAME
+        echo "备份完成..."
+
+        echo $($SCRIPTFILE 1)
+        deleteFile $SCRIPTFILE 
+        deleteFile $PARAMFILE
+        echo "安装成功."
+    else
+        echo $($SCRIPTFILE 0)
+        deleteFile $SCRIPTFILE 
+        deleteFile $PARAMFILE
+        echo "安装失败."
+    fi
+
+    echo "config更新."
+    if [ -e $USER_HOME/install/bash.sh ]; then
+        $USER_HOME/install/bash.sh
+        echo "config更新检查完成."
+        if [ -e $USER_HO ME/install/cti-config ]; then
+            mv $USER_HOME/install/cti-config $USER_HOME
+            echo "已更新并转移位置"
+        fi
+    else
+        echo "无bash脚本文件."
+    fi
+    
+    chmod 777 $USER_HOME/cti_vmap
+    ldconfig
+
+    #docker安装
+    dockerUPGRADE
+  ;;
+  -map)
+    DIRNAME=cti_map
+    if [ ! -z "$2" ]; then
+        DIRNAME=$2
+    fi
+    echo "更新$DIRNAME地图数据."
+    getDATA
+    echo "完成."
+  ;;
+  -vmap)
+    DIRNAME=cti_vmap
+    if [ ! -z "$2" ]; then
+        DIRNAME=$2
+    fi
+    echo "更新$DIRNAME高精地图数据."
+    getDATA
+    echo "完成."
+  ;;
+  *)
+    echo "@@@命令输入异常@@@"
+    printUSE
+    exit -1
+  ;;
+esac
+
+#配置环境
+env_dir=/opt/cti
+if [ -d $env_dir ]; then
+    ros_distros=$(ls $env_dir)
+    for ros_distro in $ros_distros; do
+        if [ -f $env_dir/$ros_distro/setup.bash ]; then
+            grep "source ${env_dir}/${ros_distro}/setup.bash" $USER_HOME/.bashrc
+            if [ $? -eq 0 ]; then 
+                echo ".baserc had source setup.bash!" 
+            else 
+                echo ".baserc have not source setup.bash!"
+                echo "source ${env_dir}/${ros_distro}/setup.bash" >> $USER_HOME/.bashrc
+            fi
+        fi
+    done
+fi
+echo "配置环境完成."
+
+exit 0
+
